@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -25,6 +26,19 @@ async def init_db() -> None:
         raise RuntimeError("Engine is not initialized")
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrate_sqlite)
+
+
+def _migrate_sqlite(sync_conn) -> None:
+    """Add columns introduced after first release (SQLite has no auto-alter)."""
+    rows = sync_conn.execute(text("PRAGMA table_info(workout_types)")).fetchall()
+    if not rows:
+        return
+    cols = {row[1] for row in rows}
+    if "last_reminder_on" not in cols:
+        sync_conn.execute(
+            text("ALTER TABLE workout_types ADD COLUMN last_reminder_on DATE")
+        )
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:

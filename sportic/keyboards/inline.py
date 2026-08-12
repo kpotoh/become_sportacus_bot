@@ -104,11 +104,3 @@ def pick_workout_kb(workouts: list[tuple[int, str]], prefix: str) -> InlineKeybo
     builder.button(text="Отмена", callback_data=f"{prefix}:cancel")
     builder.adjust(1)
     return builder.as_markup()
-
-
-def stats_period_kb() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="Месяц", callback_data="stats:month")
-    builder.button(text="Год", callback_data="stats:year")
-    builder.adjust(2)
-    return builder.as_markup()

@@ -7,7 +7,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from sportic.config import Settings
 from sportic.db.session import get_session_factory
-from sportic.handlers import reminders_cb, settings as settings_handlers, start, stats, workouts
+from sportic.handlers import (
+    achievements,
+    reminders_cb,
+    settings as settings_handlers,
+    start,
+    stats,
+    workouts,
+)
 from sportic.middlewares import DbSessionMiddleware
 
 
@@ -34,4 +41,5 @@ def create_dispatcher(settings: Settings) -> Dispatcher:
     dp.include_router(settings_handlers.router)
     dp.include_router(reminders_cb.router)
     dp.include_router(stats.router)
+    dp.include_router(achievements.router)
     return dp

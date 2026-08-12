@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sportic import texts
 from sportic.config import Settings
-from sportic.db.repositories import UserRepo, WorkoutRepo
+from sportic.db.repositories import UserRepo, WorkoutRepo, format_user_dt
 from sportic.handlers.states import AddWorkout
 from sportic.keyboards import inline as ikb
 from sportic.keyboards.reply import (
@@ -15,7 +15,9 @@ from sportic.keyboards.reply import (
     BTN_MY_WORKOUTS,
     main_menu,
 )
-from sportic.services.reminders import mark_done
+from sportic.message_utils import delete_callback_message
+from sportic.services.achievements import check_and_unlock, notify_unlocked
+from sportic.services.reminders import clear_reminder_message, mark_done
 from sportic.services.streaks import celebration_extra
 from sportic.utils import parse_positive_int, parse_time_range
 
@@ -35,9 +37,11 @@ async def my_workouts(
         return
     lines = []
     for w in workouts:
+        added = format_user_dt(w.created_at, user.timezone)
         lines.append(
             f"• <b>{w.name}</b> — каждые {w.interval_days} дн., "
             f"{w.time_from.strftime('%H:%M')}–{w.time_to.strftime('%H:%M')}\n"
+            f"  добавлена: {added}\n"
             f"  следующая: {w.next_due.isoformat()}, серия: {w.current_streak}"
         )
     await message.answer("\n".join(lines), reply_markup=main_menu())
@@ -64,8 +68,10 @@ async def mark_done_cb(
 ) -> None:
     value = callback.data.split(":", 1)[1]
     await callback.answer()
+    bot = callback.bot
     if value == "cancel":
-        await callback.message.edit_text("Отменено.")
+        await delete_callback_message(callback)
+        await bot.send_message(callback.from_user.id, "Отменено.", reply_markup=main_menu())
         return
     workout_id = int(value)
     user = await UserRepo(session).get_or_create(
@@ -73,17 +79,22 @@ async def mark_done_cb(
     )
     workout = await WorkoutRepo(session).get(workout_id)
     if not workout or workout.user_id != user.id or not workout.active:
-        await callback.message.answer("Тренировка не найдена.")
+        await delete_callback_message(callback)
+        await bot.send_message(callback.from_user.id, "Тренировка не найдена.")
         return
+    await clear_reminder_message(session, bot, workout)
+    await delete_callback_message(callback)
     streak = await mark_done(session, workout, user)
     text = texts.DONE_BASE.format(name=workout.name, streak=streak)
     text += celebration_extra(streak)
-    await callback.message.edit_text(text)
-    # Celebration animation
-    try:
-        await callback.message.answer_dice(emoji="🎰")
-    except Exception:
-        pass
+    await bot.send_message(callback.from_user.id, text, reply_markup=main_menu())
+    unlocked = await check_and_unlock(session, user)
+    await notify_unlocked(bot, callback.from_user.id, unlocked)
+    if not unlocked:
+        try:
+            await bot.send_dice(callback.from_user.id, emoji="🎰")
+        except Exception:
+            pass
 
 
 async def start_add_workout_flow(message: Message, state: FSMContext) -> None:
@@ -95,14 +106,19 @@ async def start_add_workout_flow(message: Message, state: FSMContext) -> None:
 async def add_wname_cb(callback: CallbackQuery, state: FSMContext) -> None:
     value = callback.data.split(":", 1)[1]
     await callback.answer()
+    await delete_callback_message(callback)
     if value == "custom":
         await state.set_state(AddWorkout.name_custom)
-        await callback.message.answer("Напиши название тренировки:")
+        await callback.bot.send_message(
+            callback.from_user.id, "Напиши название тренировки:"
+        )
         return
     await state.update_data(workout_name=value)
     await state.set_state(AddWorkout.interval)
-    await callback.message.answer(
-        texts.ASK_INTERVAL.format(name=value), reply_markup=ikb.interval_kb()
+    await callback.bot.send_message(
+        callback.from_user.id,
+        texts.ASK_INTERVAL.format(name=value),
+        reply_markup=ikb.interval_kb(),
     )
 
 
@@ -124,14 +140,18 @@ async def add_wname_text(message: Message, state: FSMContext) -> None:
 async def add_interval_cb(callback: CallbackQuery, state: FSMContext) -> None:
     value = callback.data.split(":", 1)[1]
     await callback.answer()
+    await delete_callback_message(callback)
     if value == "custom":
         await state.set_state(AddWorkout.interval_custom)
-        await callback.message.answer("Введи число дней между тренировками:")
+        await callback.bot.send_message(
+            callback.from_user.id, "Введи число дней между тренировками:"
+        )
         return
     data = await state.get_data()
     await state.update_data(interval_days=int(value))
     await state.set_state(AddWorkout.window)
-    await callback.message.answer(
+    await callback.bot.send_message(
+        callback.from_user.id,
         texts.ASK_TIME_WINDOW.format(name=data["workout_name"]),
         reply_markup=ikb.time_window_kb(),
     )
@@ -162,17 +182,28 @@ async def add_window_cb(
 ) -> None:
     value = callback.data.split(":", 1)[1]
     await callback.answer()
+    await delete_callback_message(callback)
     if value == "custom":
         await state.set_state(AddWorkout.window_custom)
-        await callback.message.answer(
-            "Введи диапазон, например <code>07:00-10:00</code>"
+        await callback.bot.send_message(
+            callback.from_user.id,
+            "Введи диапазон, например <code>07:00-10:00</code>",
         )
         return
     idx = int(value)
     _, t_from, t_to = ikb.TIME_WINDOWS[idx]
-    await _save_workout(callback.from_user.id, state, session, settings, t_from, t_to)
+    workout = await _save_workout(
+        callback.from_user.id, state, session, settings, t_from, t_to
+    )
     await state.clear()
-    await callback.message.answer("Тренировка добавлена.", reply_markup=main_menu())
+    user = await UserRepo(session).get_or_create(
+        callback.from_user.id, settings.default_tz
+    )
+    await callback.bot.send_message(
+        callback.from_user.id,
+        texts.workout_added_message(workout, user.timezone),
+        reply_markup=main_menu(),
+    )
 
 
 @router.message(AddWorkout.window)
@@ -188,9 +219,17 @@ async def add_window_text(
         await message.answer("Формат: <code>07:00-10:00</code>")
         return
     t_from, t_to = parsed
-    await _save_workout(message.from_user.id, state, session, settings, t_from, t_to)
+    workout = await _save_workout(
+        message.from_user.id, state, session, settings, t_from, t_to
+    )
     await state.clear()
-    await message.answer("Тренировка добавлена.", reply_markup=main_menu())
+    user = await UserRepo(session).get_or_create(
+        message.from_user.id, settings.default_tz
+    )
+    await message.answer(
+        texts.workout_added_message(workout, user.timezone),
+        reply_markup=main_menu(),
+    )
 
 
 async def _save_workout(
@@ -200,10 +239,10 @@ async def _save_workout(
     settings: Settings,
     t_from,
     t_to,
-) -> None:
+):
     data = await state.get_data()
     user = await UserRepo(session).get_or_create(telegram_id, settings.default_tz)
-    await WorkoutRepo(session).add(
+    return await WorkoutRepo(session).add(
         user,
         name=data["workout_name"],
         interval_days=int(data["interval_days"]),
@@ -218,8 +257,12 @@ async def delete_workout_cb(
 ) -> None:
     value = callback.data.split(":", 1)[1]
     await callback.answer()
+    bot = callback.bot
+    await delete_callback_message(callback)
     if value == "cancel":
-        await callback.message.edit_text("Отменено.")
+        await bot.send_message(
+            callback.from_user.id, "Отменено.", reply_markup=main_menu()
+        )
         return
     workout_id = int(value)
     user = await UserRepo(session).get_or_create(
@@ -227,7 +270,12 @@ async def delete_workout_cb(
     )
     workout = await WorkoutRepo(session).get(workout_id)
     if not workout or workout.user_id != user.id:
-        await callback.message.answer("Тренировка не найдена.")
+        await bot.send_message(callback.from_user.id, "Тренировка не найдена.")
         return
+    await clear_reminder_message(session, bot, workout)
     await WorkoutRepo(session).deactivate(workout)
-    await callback.message.edit_text(f"«{workout.name}» удалена.")
+    await bot.send_message(
+        callback.from_user.id,
+        f"«{workout.name}» удалена.",
+        reply_markup=main_menu(),
+    )

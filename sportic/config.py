@@ -17,6 +17,7 @@ class Settings:
     default_tz: str
     database_url: str
     reminder_check_minutes: int
+    update_notify: bool
 
 
 def load_settings() -> Settings:
@@ -25,6 +26,7 @@ def load_settings() -> Settings:
         raise RuntimeError(
             "BOT_TOKEN is not set. Copy .env.example to .env and put your token from @BotFather."
         )
+    notify_raw = os.getenv("UPDATE_NOTIFY", "1").strip().lower()
     return Settings(
         bot_token=token,
         default_tz=os.getenv("DEFAULT_TZ", "Europe/Moscow").strip(),
@@ -32,4 +34,5 @@ def load_settings() -> Settings:
             "DATABASE_URL", f"sqlite+aiosqlite:///{ROOT_DIR / 'sportic.db'}"
         ).strip(),
         reminder_check_minutes=int(os.getenv("REMINDER_CHECK_MINUTES", "1")),
+        update_notify=notify_raw not in ("0", "false", "no", "off"),
     )

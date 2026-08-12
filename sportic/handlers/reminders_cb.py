@@ -7,7 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sportic import texts
 from sportic.config import Settings
 from sportic.db.repositories import UserRepo, WorkoutRepo
-from sportic.services.reminders import mark_done, mark_skip, mark_tomorrow
+from sportic.message_utils import delete_callback_message
+from sportic.services.achievements import check_and_unlock, notify_unlocked
+from sportic.services.reminders import (
+    clear_reminder_message,
+    mark_done,
+    mark_skip,
+    mark_tomorrow,
+)
 from sportic.services.streaks import celebration_extra
 
 router = Router(name="reminders_cb")
@@ -30,26 +37,38 @@ async def reminder_action(
     )
     workout = await WorkoutRepo(session).get(workout_id)
     if not workout or workout.user_id != user.id or not workout.active:
-        await callback.message.edit_text("Тренировка не найдена.")
+        await delete_callback_message(callback)
+        await callback.message.answer("Тренировка не найдена.")
         return
+
+    bot = callback.bot
+    await clear_reminder_message(session, bot, workout)
+    await delete_callback_message(callback)
 
     if action == "done":
         streak = await mark_done(session, workout, user)
         text = texts.DONE_BASE.format(name=workout.name, streak=streak)
         text += celebration_extra(streak)
-        await callback.message.edit_text(text)
-        try:
-            await callback.message.answer_dice(emoji="🎰")
-        except Exception:
-            pass
+        await bot.send_message(callback.from_user.id, text)
+        unlocked = await check_and_unlock(session, user)
+        await notify_unlocked(bot, callback.from_user.id, unlocked)
+        if not unlocked:
+            try:
+                await bot.send_dice(callback.from_user.id, emoji="🎰")
+            except Exception:
+                pass
         return
 
     if action == "tomorrow":
         await mark_tomorrow(session, workout, user)
-        await callback.message.edit_text(texts.POSTPONED.format(name=workout.name))
+        await bot.send_message(
+            callback.from_user.id, texts.POSTPONED.format(name=workout.name)
+        )
         return
 
     if action == "skip":
         await mark_skip(session, workout, user)
-        await callback.message.edit_text(texts.SKIPPED.format(name=workout.name))
+        await bot.send_message(
+            callback.from_user.id, texts.SKIPPED.format(name=workout.name)
+        )
         return

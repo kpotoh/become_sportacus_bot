@@ -7,8 +7,15 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sportic.db.models import LogStatus, User, WorkoutType
-from sportic.db.repositories import LogRepo, SlotRepo, UserRepo, WorkoutRepo, user_today
+from sportic.db.repositories import (
+    LogRepo,
+    ReminderRepo,
+    UserRepo,
+    WorkoutRepo,
+    user_today,
+)
 from sportic.keyboards.inline import reminder_actions_kb
+from sportic.message_utils import delete_chat_message
 from sportic.texts import REMINDER_TEMPLATE, format_streak_line
 
 
@@ -19,44 +26,75 @@ class ReminderService:
 
     async def tick(self) -> None:
         async with self.session_factory() as session:
-            users = await UserRepo(session).all_with_slots()
+            users = await UserRepo(session).all_onboarded()
             for user in users:
-                if not user.onboarding_done:
-                    continue
                 await break_overdue_streaks(session, user)
-                await self._process_user(session, user)
+                await self._send_due_reminders(session, user)
+                await self._expire_reminders(session, user)
             await session.commit()
 
-    async def _process_user(self, session: AsyncSession, user: User) -> None:
+    async def _send_due_reminders(self, session: AsyncSession, user: User) -> None:
         tz = ZoneInfo(user.timezone)
         now = datetime.now(tz)
         today = now.date()
         current = now.time().replace(second=0, microsecond=0)
 
-        slot_repo = SlotRepo(session)
-        workout_repo = WorkoutRepo(session)
-        due = await workout_repo.due_for_user(user)
-        if not due:
-            return
-
-        for slot in user.notification_slots:
-            slot_time = slot.time_local.replace(second=0, microsecond=0)
-            if slot_time.hour != current.hour or slot_time.minute != current.minute:
+        for workout in await WorkoutRepo(session).due_for_user(user):
+            start = workout.time_from.replace(second=0, microsecond=0)
+            if start.hour != current.hour or start.minute != current.minute:
                 continue
-            if slot.last_fired_on == today:
+            if workout.last_reminder_on == today:
                 continue
 
-            for workout in due:
-                text = REMINDER_TEMPLATE.format(
-                    name=workout.name,
-                    streak_line=format_streak_line(workout.current_streak),
-                )
-                await self.bot.send_message(
-                    chat_id=user.telegram_id,
-                    text=text,
-                    reply_markup=reminder_actions_kb(workout.id),
-                )
-            await slot_repo.mark_fired(slot, today)
+            text = REMINDER_TEMPLATE.format(
+                name=workout.name,
+                streak_line=format_streak_line(workout.current_streak),
+                until=workout.time_to.strftime("%H:%M"),
+            )
+            msg = await self.bot.send_message(
+                chat_id=user.telegram_id,
+                text=text,
+                reply_markup=reminder_actions_kb(workout.id),
+            )
+            await ReminderRepo(session).set_active(
+                workout,
+                chat_id=user.telegram_id,
+                message_id=msg.message_id,
+                sent_on=today,
+                expire_time=workout.time_to.replace(second=0, microsecond=0),
+            )
+            workout.last_reminder_on = today
+
+    async def _expire_reminders(self, session: AsyncSession, user: User) -> None:
+        tz = ZoneInfo(user.timezone)
+        now = datetime.now(tz)
+        today = now.date()
+        current = now.time().replace(second=0, microsecond=0)
+
+        for workout in user.workouts:
+            if not workout.active or workout.active_reminder is None:
+                continue
+            rem = workout.active_reminder
+            expire = rem.expire_time.replace(second=0, microsecond=0)
+            # Expire on the sent day at time_to, or any later day if bot was down
+            should_expire = False
+            if rem.sent_on < today:
+                should_expire = True
+            elif rem.sent_on == today and current >= expire:
+                should_expire = True
+            if not should_expire:
+                continue
+
+            await delete_chat_message(self.bot, rem.chat_id, rem.message_id)
+            await ReminderRepo(session).clear(workout.id)
+
+
+async def clear_reminder_message(
+    session: AsyncSession, bot: Bot, workout: WorkoutType
+) -> None:
+    rem = await ReminderRepo(session).clear(workout.id)
+    if rem:
+        await delete_chat_message(bot, rem.chat_id, rem.message_id)
 
 
 async def mark_done(
@@ -107,7 +145,6 @@ async def mark_skip(
 
 
 async def break_overdue_streaks(session: AsyncSession, user: User) -> None:
-    """Reset streak if due day passed without done/postpone (still overdue ≥1 day)."""
     today = user_today(user.timezone)
     for workout in await WorkoutRepo(session).list_active(user.id):
         if workout.current_streak > 0 and (today - workout.next_due).days >= 1:

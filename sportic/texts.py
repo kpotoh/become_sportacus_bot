@@ -25,17 +25,13 @@ ASK_TIME_WINDOW = (
     "Выбери пресет или введи диапазон вида <code>07:00-10:00</code>."
 )
 
-ASK_MORE_WORKOUTS = "Добавить ещё тренировку или перейти к уведомлениям?"
-
-ASK_NOTIFICATIONS = (
-    "Когда напоминать, если тренировка ещё не сделана?\n"
-    "По умолчанию: 09:00 и 18:00.\n"
-    "Можно добавить слот (например <code>12:30</code>) или удалить."
-)
+ASK_MORE_WORKOUTS = "Добавить ещё тренировку или закончить настройку?"
 
 ONBOARDING_DONE = (
     "Готово! Настройки сохранены.\n"
-    "Я буду напоминать о тренировках и помогать держать серию. Удачи!"
+    "Напоминание по каждой тренировке придёт в начале её окна "
+    "(например в 07:00, если окно 07:00–10:00). "
+    "Если к концу окна не отметишь — сообщение исчезнет. Удачи!"
 )
 
 MAIN_MENU_HINT = "Главное меню:"
@@ -44,12 +40,10 @@ MY_WORKOUTS_EMPTY = "Пока нет активных тренировок. До
 
 SETTINGS_MENU = "Настройки:"
 
-STATS_PICK_PERIOD = "За какой период показать статистику?"
-
 REMINDER_TEMPLATE = (
     "Пора: <b>{name}</b>!\n"
     "{streak_line}\n"
-    "Не ломай ударный режим — отметь тренировку, когда сделаешь."
+    "Окно до <b>{until}</b>. Не ломай ударный режим — отметь, когда сделаешь."
 )
 
 STREAK_LINE = "Ударный режим: <b>{streak}</b> {days_word} подряд"
@@ -106,3 +100,18 @@ def format_streak_line(streak: int) -> str:
     if streak <= 0:
         return STREAK_ZERO
     return STREAK_LINE.format(streak=streak, days_word=days_word(streak))
+
+
+def workout_added_message(workout, tz_name: str) -> str:
+    from sportic.db.repositories import format_user_dt
+
+    added = format_user_dt(workout.created_at, tz_name)
+    return (
+        f"Добавлена тренировка <b>{workout.name}</b>\n"
+        f"Интервал: каждые {workout.interval_days} дн.\n"
+        f"Окно: {workout.time_from.strftime('%H:%M')}–"
+        f"{workout.time_to.strftime('%H:%M')}\n"
+        f"Когда добавлена: {added}\n"
+        f"Напоминание придёт в {workout.time_from.strftime('%H:%M')} "
+        f"в дни по плану."
+    )

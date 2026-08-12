@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sportic import texts
 from sportic.config import Settings
-from sportic.db.repositories import SlotRepo, UserRepo, WorkoutRepo
+from sportic.db.repositories import UserRepo, WorkoutRepo
 from sportic.handlers.states import SettingsFlow
 from sportic.handlers.workouts import start_add_workout_flow
 from sportic.keyboards import inline as ikb
@@ -16,12 +16,12 @@ from sportic.keyboards.reply import (
     BTN_BACK,
     BTN_CHANGE_TZ,
     BTN_DELETE_WORKOUT,
-    BTN_EDIT_SLOTS,
     BTN_SETTINGS,
     main_menu,
     settings_menu,
 )
-from sportic.utils import parse_time, validate_timezone
+from sportic.message_utils import delete_callback_message
+from sportic.utils import validate_timezone
 
 router = Router(name="settings")
 
@@ -75,16 +75,20 @@ async def settings_tz_cb(
 ) -> None:
     value = callback.data.split(":", 1)[1]
     await callback.answer()
+    await delete_callback_message(callback)
+    bot = callback.bot
     if value == "custom":
-        await callback.message.answer(texts.ASK_TIMEZONE_CUSTOM)
+        await bot.send_message(callback.from_user.id, texts.ASK_TIMEZONE_CUSTOM)
         return
     user = await UserRepo(session).get_or_create(
         callback.from_user.id, settings.default_tz
     )
     await UserRepo(session).set_timezone(user, value)
     await state.clear()
-    await callback.message.answer(
-        f"Часовой пояс: <code>{value}</code>", reply_markup=settings_menu()
+    await bot.send_message(
+        callback.from_user.id,
+        f"Часовой пояс: <code>{value}</code>",
+        reply_markup=settings_menu(),
     )
 
 
@@ -105,83 +109,3 @@ async def settings_tz_text(
     await UserRepo(session).set_timezone(user, tz)
     await state.clear()
     await message.answer(f"Часовой пояс: <code>{tz}</code>", reply_markup=settings_menu())
-
-
-@router.message(F.text == BTN_EDIT_SLOTS)
-async def settings_slots(
-    message: Message,
-    state: FSMContext,
-    session: AsyncSession,
-    settings: Settings,
-) -> None:
-    user = await UserRepo(session).get_or_create(
-        message.from_user.id, settings.default_tz
-    )
-    await SlotRepo(session).ensure_defaults(user)
-    slots = await SlotRepo(session).list_for_user(user.id)
-    times = [s.time_local for s in slots]
-    await state.set_state(SettingsFlow.notifications)
-    await message.answer(
-        texts.ASK_NOTIFICATIONS, reply_markup=ikb.notifications_setup_kb(times)
-    )
-
-
-@router.callback_query(SettingsFlow.notifications, F.data.startswith("slotdel:"))
-async def settings_slot_del(
-    callback: CallbackQuery,
-    session: AsyncSession,
-    settings: Settings,
-) -> None:
-    label = callback.data.split(":", 1)[1]
-    t = parse_time(label)
-    await callback.answer()
-    if not t:
-        return
-    user = await UserRepo(session).get_or_create(
-        callback.from_user.id, settings.default_tz
-    )
-    await SlotRepo(session).remove(user, t)
-    slots = await SlotRepo(session).list_for_user(user.id)
-    times = [s.time_local for s in slots]
-    await callback.message.edit_reply_markup(
-        reply_markup=ikb.notifications_setup_kb(times)
-    )
-
-
-@router.callback_query(SettingsFlow.notifications, F.data == "slot:add")
-async def settings_slot_add(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await state.set_state(SettingsFlow.notification_add)
-    await callback.message.answer("Введи время слота, например <code>12:30</code>")
-
-
-@router.message(SettingsFlow.notification_add)
-async def settings_slot_add_text(
-    message: Message,
-    state: FSMContext,
-    session: AsyncSession,
-    settings: Settings,
-) -> None:
-    t = parse_time(message.text or "")
-    if not t:
-        await message.answer("Формат: <code>HH:MM</code>")
-        return
-    user = await UserRepo(session).get_or_create(
-        message.from_user.id, settings.default_tz
-    )
-    added = await SlotRepo(session).add(user, t)
-    if not added:
-        await message.answer("Такой слот уже есть.")
-    slots = await SlotRepo(session).list_for_user(user.id)
-    times = [s.time_local for s in slots]
-    await state.set_state(SettingsFlow.notifications)
-    await message.answer(
-        texts.ASK_NOTIFICATIONS, reply_markup=ikb.notifications_setup_kb(times)
-    )
-
-
-@router.callback_query(SettingsFlow.notifications, F.data == "slot:done")
-async def settings_slots_done(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await state.clear()
-    await callback.message.answer("Уведомления сохранены.", reply_markup=settings_menu())

@@ -45,6 +45,9 @@ class User(Base):
     notification_slots: Mapped[list["NotificationSlot"]] = relationship(
         back_populates="user"
     )
+    achievements: Mapped[list["UserAchievement"]] = relationship(
+        back_populates="user"
+    )
 
 
 class WorkoutType(Base):
@@ -60,12 +63,35 @@ class WorkoutType(Base):
     started_on: Mapped[date] = mapped_column(Date, default=date.today)
     current_streak: Mapped[int] = mapped_column(Integer, default=0)
     next_due: Mapped[date] = mapped_column(Date, default=date.today)
+    # Last local date when start-of-window reminder was sent
+    last_reminder_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     user: Mapped["User"] = relationship(back_populates="workouts")
     logs: Mapped[list["WorkoutLog"]] = relationship(back_populates="workout")
+    active_reminder: Mapped[Optional["ActiveReminder"]] = relationship(
+        back_populates="workout", uselist=False
+    )
+
+
+class ActiveReminder(Base):
+    """Tracks an open reminder message so it can be deleted at window end or on action."""
+
+    __tablename__ = "active_reminders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workout_type_id: Mapped[int] = mapped_column(
+        ForeignKey("workout_types.id", ondelete="CASCADE"), unique=True
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    message_id: Mapped[int] = mapped_column(Integer)
+    sent_on: Mapped[date] = mapped_column(Date)
+    # Local time of day when the reminder should disappear (workout.time_to)
+    expire_time: Mapped[time] = mapped_column(Time)
+
+    workout: Mapped["WorkoutType"] = relationship(back_populates="active_reminder")
 
 
 class NotificationSlot(Base):
@@ -100,3 +126,30 @@ class WorkoutLog(Base):
     )
 
     workout: Mapped["WorkoutType"] = relationship(back_populates="logs")
+
+
+class UserAchievement(Base):
+    __tablename__ = "user_achievements"
+    __table_args__ = (
+        UniqueConstraint("user_id", "code", name="uq_user_achievement"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    code: Mapped[str] = mapped_column(String(64))
+    unlocked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    user: Mapped["User"] = relationship(back_populates="achievements")
+
+
+class AnnouncedRelease(Base):
+    """Tracks which app versions were already broadcast to users."""
+
+    __tablename__ = "announced_releases"
+
+    version: Mapped[str] = mapped_column(String(32), primary_key=True)
+    announced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

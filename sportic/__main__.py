@@ -8,6 +8,7 @@ from sportic.config import load_settings
 from sportic.db.session import get_session_factory, init_db, init_engine
 from sportic.scheduler import setup_scheduler
 from sportic.services.reminders import ReminderService
+from sportic.services.updates import notify_users_about_update
 
 
 async def main() -> None:
@@ -25,6 +26,15 @@ async def main() -> None:
     reminder_service = ReminderService(get_session_factory(), bot)
     scheduler = setup_scheduler(reminder_service, settings.reminder_check_minutes)
     scheduler.start()
+
+    try:
+        await notify_users_about_update(
+            get_session_factory(),
+            bot,
+            enabled=settings.update_notify,
+        )
+    except Exception:
+        logging.exception("Failed to broadcast update notification")
 
     logging.info("Sportic bot started")
     try:
