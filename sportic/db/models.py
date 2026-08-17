@@ -88,7 +88,7 @@ class ActiveReminder(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger)
     message_id: Mapped[int] = mapped_column(Integer)
     sent_on: Mapped[date] = mapped_column(Date)
-    # Local time of day when the reminder should disappear (workout.time_to)
+    # Local time of day when the reminder should disappear (22:00)
     expire_time: Mapped[time] = mapped_column(Time)
 
     workout: Mapped["WorkoutType"] = relationship(back_populates="active_reminder")

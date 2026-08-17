@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
+
+# Unanswered reminder buttons stay until this local time
+REMINDER_EXPIRE_TIME = time(22, 0)
 
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -49,7 +52,7 @@ class ReminderService:
             text = REMINDER_TEMPLATE.format(
                 name=workout.name,
                 streak_line=format_streak_line(workout.current_streak),
-                until=workout.time_to.strftime("%H:%M"),
+                until=REMINDER_EXPIRE_TIME.strftime("%H:%M"),
             )
             msg = await self.bot.send_message(
                 chat_id=user.telegram_id,
@@ -61,7 +64,7 @@ class ReminderService:
                 chat_id=user.telegram_id,
                 message_id=msg.message_id,
                 sent_on=today,
-                expire_time=workout.time_to.replace(second=0, microsecond=0),
+                expire_time=REMINDER_EXPIRE_TIME,
             )
             workout.last_reminder_on = today
 
@@ -75,8 +78,8 @@ class ReminderService:
             if not workout.active or workout.active_reminder is None:
                 continue
             rem = workout.active_reminder
-            expire = rem.expire_time.replace(second=0, microsecond=0)
-            # Expire on the sent day at time_to, or any later day if bot was down
+            expire = REMINDER_EXPIRE_TIME
+            # Expire at 22:00 on the sent day, or any later day if bot was down
             should_expire = False
             if rem.sent_on < today:
                 should_expire = True
